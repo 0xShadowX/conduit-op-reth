@@ -436,17 +436,16 @@ impl ConduitOpChainSpec {
                 return Err(eyre::eyre!("EvmLimitsFork0 must configure at least one EVM limit"));
             }
 
-            // REVM enforces a zero limit literally rather than as "no limit": a zero
-            // `txGasLimitCap` rejects every non-deposit transaction, while the txpool treats a
-            // zero cap as disabled and keeps admitting them.
-            for (name, is_zero) in [
-                ("maxCodeSize", raw.max_code_size == Some(0)),
-                ("maxInitcodeSize", raw.max_initcode_size == Some(0)),
-                ("txGasLimitCap", raw.tx_gas_limit_cap == Some(0)),
-            ] {
-                if is_zero {
-                    return Err(eyre::eyre!("EvmLimitsFork0 {name} must be greater than zero"));
-                }
+            // REVM applies a zero limit literally rather than as "unset", so a zero
+            // txGasLimitCap would reject every non-deposit transaction.
+            if raw.max_code_size == Some(0) {
+                return Err(eyre::eyre!("EvmLimitsFork0 maxCodeSize must be greater than zero"));
+            }
+            if raw.max_initcode_size == Some(0) {
+                return Err(eyre::eyre!("EvmLimitsFork0 maxInitcodeSize must be greater than zero"));
+            }
+            if raw.tx_gas_limit_cap == Some(0) {
+                return Err(eyre::eyre!("EvmLimitsFork0 txGasLimitCap must be greater than zero"));
             }
 
             if let Some(conflicting_fork) =
@@ -1090,6 +1089,7 @@ mod tests {
         }
     }
 
+    /// REVM enforces a zero limit literally, so it would block every transaction or deployment.
     #[test]
     fn evm_limits_fork_rejects_zero_limits() {
         for field in ["maxCodeSize", "maxInitcodeSize", "txGasLimitCap"] {
@@ -1101,7 +1101,7 @@ mod tests {
             assert!(
                 err.to_string()
                     .contains(&format!("EvmLimitsFork0 {field} must be greater than zero")),
-                "unexpected error: {err}",
+                "{field}: unexpected error: {err}",
             );
         }
     }
