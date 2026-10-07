@@ -11,7 +11,7 @@ use reth_optimism_chainspec::{
     OpChainSpec, SUPPORTED_CHAINS, generated_chain_value_parser, make_op_genesis_header,
 };
 use reth_optimism_forks::{OpHardfork, OpHardforks};
-use reth_primitives_traits::SealedHeader;
+use reth_primitives_traits::{Bytecode, SealedHeader};
 use serde::Deserialize;
 use std::{collections::HashMap, sync::Arc};
 
@@ -390,6 +390,16 @@ impl ConduitOpChainSpec {
             let block_time_at_fork = raw.block_time_at_fork.unwrap_or(DEFAULT_BLOCK_TIME_AT_FORK);
             if block_time_at_fork == 0 {
                 return Err(eyre::eyre!("{fork} blockTimeAtFork must be greater than zero"));
+            }
+
+            // The transition decodes each code with `Bytecode::new_raw`, which panics on a
+            // malformed EIP-7702 designator; reject it here rather than at the activation block.
+            for (address, account) in &raw.updates {
+                if let Some(code) = &account.code {
+                    Bytecode::new_raw_checked(code.clone()).map_err(|err| {
+                        eyre::eyre!("{fork} code for {address} is not valid bytecode: {err}")
+                    })?;
+                }
             }
 
             state_override_fork_activations[idx] = ForkCondition::Timestamp(raw.time);
@@ -807,6 +817,36 @@ mod tests {
                 .contains("StateOverrideFork0 blockTimeAtFork must be greater than zero"),
             "unexpected error: {err}",
         );
+    }
+
+    /// The transition panics on code it cannot decode, so a malformed EIP-7702 designator must fail
+    /// at startup rather than at the activation block.
+    #[test]
+    fn state_override_rejects_malformed_eip7702_code() {
+        let with_code = |code: &str| {
+            let mut genesis: serde_json::Value =
+                serde_json::from_str(&with_conduit_fork(5000)).unwrap();
+            genesis["config"]["conduit"]["stateOverrideFork0"]["updates"]["0x4200000000000000000000000000000000000042"]
+                ["code"] = serde_json::json!(code);
+            serde_json::to_string(&genesis).unwrap()
+        };
+        let address = "11".repeat(20);
+
+        // A well-formed designator still parses.
+        parse_spec(&with_code(&format!("0xef0100{address}")));
+
+        for bad in [
+            format!("0xef0100{}", "11".repeat(19)), // short address
+            format!("0xef0100{}", "11".repeat(21)), // long address
+            format!("0xef0101{address}"),           // unsupported version
+        ] {
+            let err = try_parse_spec(&with_code(&bad)).map(|_| ()).unwrap_err();
+            assert!(
+                err.to_string().contains("StateOverrideFork0 code for") &&
+                    err.to_string().contains("is not valid bytecode"),
+                "{bad}: unexpected error: {err}",
+            );
+        }
     }
 
     /// Rounds must be contiguous from 0. A gap after the first round is the easy case to miss:
